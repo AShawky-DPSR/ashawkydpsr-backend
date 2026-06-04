@@ -1,3 +1,6 @@
+# ================= COMPLETE BACKEND CODE =================
+# Copy everything from here to the end
+
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -13,6 +16,11 @@ from typing import Optional, List
 import cloudinary
 import cloudinary.uploader
 import pandas as pd
+from openpyxl import Workbook
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 import io
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -156,17 +164,8 @@ class ActivityCreate(BaseModel):
     planned_finish: Optional[str] = None
     project_id: int = 1
 
-class DailyProgressUpdate(BaseModel):
-    planned_quantity: float
-    actual_quantity: float
-    manpower: int
-    equipment: str = ""
-    material: str = ""
-    issues: str = ""
-    next_day_plan: str = ""
-
 # ================= Helper functions =================
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -192,18 +191,8 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-# ================= Database dependency =================
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# ================= OAuth2 scheme (define after helper functions) =================
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+async def get_current_user(token: str = Depends(OAuth2PasswordBearer(tokenUrl="token")), db: Session = Depends(get_db)):
+    from fastapi import HTTPException
     credentials_exception = HTTPException(status_code=401, detail="Could not validate credentials")
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -217,6 +206,13 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return user
 
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 # ================= FastAPI app =================
 app = FastAPI(title="AShawkyDPSR API", version="1.0")
 
@@ -228,7 +224,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================= Startup event =================
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
@@ -247,7 +242,6 @@ def startup():
         db.commit()
     db.close()
 
-# ================= Auth endpoints =================
 @app.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = authenticate_user(db, form_data.username, form_data.password)
@@ -263,7 +257,6 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return {"id": current_user.id, "username": current_user.username, "full_name": current_user.full_name, "role": current_user.role}
 
-# ================= License endpoints =================
 @app.get("/license/status")
 async def license_status(db: Session = Depends(get_db)):
     lic = db.query(License).first()
@@ -291,7 +284,6 @@ async def extend_license(expiry_date: str, current_user: User = Depends(get_curr
     except:
         raise HTTPException(status_code=400, detail="Invalid date format")
 
-# ================= Activities CRUD =================
 @app.get("/activities")
 async def get_activities(db: Session = Depends(get_db)):
     acts = db.query(Activity).all()
@@ -333,7 +325,6 @@ async def delete_activity(activity_code: str, db: Session = Depends(get_db), cur
     db.commit()
     return {"message": "Deleted"}
 
-# ================= Progress calculations =================
 def calculate_progress(installed, total):
     if total <= 0: return 0
     return round((installed / total) * 100, 2)
@@ -363,7 +354,6 @@ def calculate_cumulative_and_status(activity_id: int, db: Session):
         e.status = get_status_from_cumulative_variance(e.cumulative_actual, e.cumulative_planned, total_qty)
     db.commit()
 
-# ================= Daily Progress endpoints =================
 @app.post("/daily")
 async def submit_daily(
     report_date: str = Form(...),
@@ -459,7 +449,7 @@ async def get_entry(entry_id: int, db: Session = Depends(get_db), current_user: 
     }
 
 @app.put("/daily/entry/{entry_id}")
-async def update_entry(entry_id: int, data: DailyProgressUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def update_entry(entry_id: int, data: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     entry = db.query(DailyProgress).filter(DailyProgress.id == entry_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Not found")
@@ -469,13 +459,13 @@ async def update_entry(entry_id: int, data: DailyProgressUpdate, db: Session = D
         time_diff = datetime.utcnow() - entry.submitted_at
         if time_diff.total_seconds() > 24 * 3600:
             raise HTTPException(status_code=403, detail="Edit window (24h) expired")
-    entry.planned_quantity = data.planned_quantity
-    entry.actual_quantity = data.actual_quantity
-    entry.manpower = data.manpower
-    entry.equipment = data.equipment
-    entry.material = data.material
-    entry.issues = data.issues
-    entry.next_day_plan = data.next_day_plan
+    entry.planned_quantity = data.get("planned_quantity", entry.planned_quantity)
+    entry.actual_quantity = data.get("actual_quantity", entry.actual_quantity)
+    entry.manpower = data.get("manpower", entry.manpower)
+    entry.equipment = data.get("equipment", entry.equipment)
+    entry.material = data.get("material", entry.material)
+    entry.issues = data.get("issues", entry.issues)
+    entry.next_day_plan = data.get("next_day_plan", entry.next_day_plan)
     db.commit()
     calculate_cumulative_and_status(entry.activity_id, db)
     return {"message": "Entry updated"}
@@ -492,7 +482,6 @@ async def delete_entry(entry_id: int, db: Session = Depends(get_db), current_use
     calculate_cumulative_and_status(entry.activity_id, db)
     return {"message": "Deleted"}
 
-# ================= Progress Monitor =================
 @app.get("/progress/activities")
 async def get_activity_progress(db: Session = Depends(get_db), discipline: str = None):
     query = db.query(Activity)
@@ -560,7 +549,6 @@ async def export_daily_report(date: str, db: Session = Depends(get_db)):
     output.seek(0)
     return Response(content=output.read(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename=daily_report_{date}.xlsx"})
 
-# ================= Run =================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
