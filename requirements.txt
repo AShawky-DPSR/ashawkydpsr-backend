@@ -13,3 +13,4 @@ openpyxl
 reportlab
 pandas
 numpy
+psycopg2-binary
